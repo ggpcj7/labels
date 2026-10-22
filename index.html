@@ -65,6 +65,8 @@ input, select { font: 16px var(--ui); color: var(--ink); background: var(--bg); 
   border-radius: 8px; padding: 10px 12px; width: 100%; min-width: 0; }
 input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px solid var(--navy); outline-offset: 2px; }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.actions .wide-btn { grid-column: 1 / -1; font-size: 0.92rem; min-height: 44px; padding: 10px 14px; }
+button.small { margin-top: 8px; min-height: 40px; padding: 8px 14px; font-size: 0.9rem; }
 button { font: 600 1rem var(--ui); border-radius: 10px; padding: 14px 16px; cursor: pointer; border: 1px solid var(--line);
   background: var(--surface); color: var(--ink); min-height: 50px; }
 button.primary { background: var(--navy); color: var(--navy-ink); border-color: var(--navy); }
@@ -96,7 +98,7 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
   <section aria-labelledby="preview-title">
     <h2 id="preview-title" class="caption">Label preview · 50×30mm · exactly what the B1 will print</h2>
     <div class="label-frame"><canvas id="preview" width="384" height="240"></canvas></div>
-    <p class="caption" id="clock-note">Prepared time is the moment you press Print. Use-by is 72 hours later.</p>
+    <p class="caption" id="clock-note">Prepared time is the moment you press Print. Use-by is the same time 3 days later.</p>
   </section>
 
   <section aria-label="Label details">
@@ -125,18 +127,21 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
     <div class="actions">
       <button id="connect" type="button">Connect B1</button>
       <button id="print" type="button" class="primary" disabled>Print label</button>
+      <button id="connect-all" type="button" class="wide-btn">Printer not listed? Show all Bluetooth devices</button>
     </div>
     <p class="result" id="result" role="status" aria-live="polite"></p>
     <ol class="steps">
       <li>Turn the B1 on with the 50×30 roll loaded.</li>
       <li>Close the official Niimbot app so it isn't holding the printer.</li>
-      <li>Tap Connect B1 and pick the printer from the list.</li>
+      <li>Tap Connect B1 and pick the printer from the list. If the list is empty, tap Show all Bluetooth devices and pick the one starting B1.</li>
       <li>Tap Print label.</li>
     </ol>
-    <details>
+    <details id="log-box">
       <summary>Technical log</summary>
       <pre id="log"></pre>
+      <button id="copy-log" type="button" class="small">Copy log</button>
     </details>
+    <p class="caption">Test page v2</p>
   </section>
 </main>
 
@@ -165,7 +170,7 @@ crc-32/crc32.js:
   const $ = (id) => document.getElementById(id);
   const canvas = $("preview"), ctx = canvas.getContext("2d", { willReadFrequently: true });
   const ui = { product: $("product"), initials: $("initials"), allergens: $("allergens"), density: $("density"),
-    connect: $("connect"), print: $("print"), result: $("result"), log: $("log"),
+    connect: $("connect"), connectAll: $("connect-all"), print: $("print"), result: $("result"), log: $("log"),
     status: $("status"), statusText: $("status-text") };
 
   let client = null, connected = false, printing = false, connectedText = "Connected";
@@ -174,6 +179,8 @@ crc-32/crc32.js:
   const setStatus = (state, text) => { ui.status.dataset.state = state; ui.statusText.textContent = text; };
   const setResult = (kind, text) => { ui.result.dataset.kind = kind; ui.result.textContent = text; };
   const pad = (n) => String(n).padStart(2, "0");
+  // Same clock time N calendar days later, so a clock change never shifts the use-by time
+  const addDays = (d, n) => { const r = new Date(d.getTime()); r.setDate(r.getDate() + n); return r; };
   const fmtDate = (d) => `${DAYS[d.getDay()]} ${pad(d.getDate())} ${MONTHS[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`;
   const fmtTime = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
@@ -183,7 +190,7 @@ crc-32/crc32.js:
 
   /** Draw the chilled label exactly as the mockups, then force every pixel to pure black or white. */
   function drawLabel(start) {
-    const useBy = new Date(start.getTime() + 72 * 3600 * 1000);
+    const useBy = addDays(start, 3);
     const product = (ui.product.value.trim() || "Product name").toUpperCase();
     const initials = (ui.initials.value.trim() || "--").toUpperCase();
     const allergens = (ui.allergens.value.trim() || "None").toUpperCase();
@@ -281,14 +288,35 @@ crc-32/crc32.js:
   function refreshButtons() {
     ui.connect.textContent = connected ? "Disconnect" : "Connect B1";
     ui.connect.disabled = printing || !hasBluetooth || !lib;
+    ui.connectAll.hidden = connected;
+    ui.connectAll.disabled = printing || !hasBluetooth || !lib;
     ui.print.disabled = !connected || printing;
   }
 
-  async function connect() {
+  const NIIMBOT_SERVICE = "e7810a71-73ae-499d-8c15-faa9aef0c3f2";
+
+  async function connect(showAll) {
     if (connected && client) { try { await client.disconnect(); } catch (e) {} return; }
     setResult("", "");
     setStatus("busy", "Connecting…");
-    ui.connect.disabled = true;
+    ui.connect.disabled = true; ui.connectAll.disabled = true;
+    log(`--- connect (${showAll ? "all devices" : "filtered"}) ${new Date().toLocaleTimeString()}`);
+    if (navigator.bluetooth.getAvailability) {
+      try { log("bluetooth available: " + await navigator.bluetooth.getAvailability()); } catch (e) { log("getAvailability error: " + e); }
+    }
+    let device;
+    if (showAll) {
+      try {
+        device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [NIIMBOT_SERVICE] });
+        log("chosen: " + (device.name || "(no name)") + " id " + device.id);
+      } catch (e) {
+        log("requestDevice (all) error: " + (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : e));
+        setStatus("idle", "Not connected");
+        setResult("err", /cancel/i.test(String(e && e.message)) ? "No device chosen. If this list was empty too, see the checks below." : "Couldn't open the device list: " + (e && e.message ? e.message : e));
+        refreshButtons();
+        return;
+      }
+    }
     client = lib.instantiateClient("bluetooth");
     client.on("connect", () => {
       connected = true;
@@ -307,11 +335,11 @@ crc-32/crc32.js:
     });
     client.on("printprogress", (e) => log(`page ${e.page}/${e.pagesTotal} print ${e.pagePrintProgress}% feed ${e.pageFeedProgress}%`));
     try {
-      await client.connect();
+      await client.connect(device ? { authorizedDevice: device } : undefined);
     } catch (e) {
-      log("connect error: " + (e && e.message ? e.message : e));
+      log("connect error: " + (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : e));
       const msg = String(e && e.message ? e.message : e);
-      if (/cancel/i.test(msg)) { setStatus("idle", "Not connected"); setResult("", "No printer chosen."); }
+      if (/cancel/i.test(msg)) { setStatus("idle", "Not connected"); setResult("", "No printer chosen. If the list was empty, tap Show all Bluetooth devices."); }
       else { setStatus("error", "Couldn't connect"); setResult("err", "Couldn't connect. Check the B1 is on and the Niimbot app is closed, then try again."); }
       client = null;
     }
@@ -339,7 +367,7 @@ crc-32/crc32.js:
       await task.printPage(encoded, 1);
       await task.waitForPageFinished();
       await task.waitForFinished();
-      setResult("ok", `Printed at ${fmtTime(start)}. Use by ${fmtDate(new Date(start.getTime() + 72 * 3600 * 1000))}.`);
+      setResult("ok", `Printed at ${fmtTime(start)}. Use by ${fmtDate(addDays(start, 3))}.`);
     } catch (e) {
       log("print error: " + (e && e.message ? e.message : e));
       setResult("err", "The print didn't finish: " + (e && e.message ? e.message : e) + ". Check the roll and lid, then try again.");
@@ -351,7 +379,19 @@ crc-32/crc32.js:
     }
   }
 
-  ui.connect.addEventListener("click", connect);
+  ui.connect.addEventListener("click", () => connect(false));
+  ui.connectAll.addEventListener("click", () => connect(true));
+  $("copy-log").addEventListener("click", async () => {
+    const text = "UA: " + navigator.userAgent + "\n" + ui.log.textContent;
+    try { await navigator.clipboard.writeText(text); $("copy-log").textContent = "Copied"; }
+    catch (e) {
+      const r = document.createRange(); r.selectNodeContents(ui.log);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      $("copy-log").textContent = "Selected — tap Copy";
+    }
+    setTimeout(() => { $("copy-log").textContent = "Copy log"; }, 2500);
+  });
+  log("page loaded · " + navigator.userAgent);
   ui.print.addEventListener("click", printLabel);
   for (const el of [ui.product, ui.initials, ui.allergens]) el.addEventListener("input", repaint);
 
