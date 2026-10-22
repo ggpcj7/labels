@@ -133,7 +133,7 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
     <ol class="steps">
       <li>Turn the B1 on with the 50×30 roll loaded.</li>
       <li>Close the official Niimbot app so it isn't holding the printer.</li>
-      <li>Tap Connect B1 and pick the printer from the list. If the list is empty, tap Show all Bluetooth devices and pick the one starting B1.</li>
+      <li>Tap Connect B1 and pick the printer starting B1 from the list. If it isn't there, tap Show all Bluetooth devices.</li>
       <li>Tap Print label.</li>
     </ol>
     <details id="log-box">
@@ -141,7 +141,7 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
       <pre id="log"></pre>
       <button id="copy-log" type="button" class="small">Copy log</button>
     </details>
-    <p class="caption">Test page v2</p>
+    <p class="caption">Test page v3</p>
   </section>
 </main>
 
@@ -305,14 +305,18 @@ crc-32/crc32.js:
       try { log("bluetooth available: " + await navigator.bluetooth.getAvailability()); } catch (e) { log("getAvailability error: " + e); }
     }
     let device;
-    if (showAll) {
+    {
+      // One simple name filter: Bluefy on iPhone rejects the library's long list of filters
+      const request = showAll
+        ? { acceptAllDevices: true, optionalServices: [NIIMBOT_SERVICE] }
+        : { filters: [{ namePrefix: "B1" }], optionalServices: [NIIMBOT_SERVICE] };
       try {
-        device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [NIIMBOT_SERVICE] });
+        device = await navigator.bluetooth.requestDevice(request);
         log("chosen: " + (device.name || "(no name)") + " id " + device.id);
       } catch (e) {
-        log("requestDevice (all) error: " + (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : e));
+        log("requestDevice error: " + (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : e));
         setStatus("idle", "Not connected");
-        setResult("err", /cancel/i.test(String(e && e.message)) ? "No device chosen. If this list was empty too, see the checks below." : "Couldn't open the device list: " + (e && e.message ? e.message : e));
+        setResult("err", /cancel/i.test(String(e && e.message)) ? (showAll ? "No device chosen." : "No printer chosen. If the list was empty, tap Show all Bluetooth devices.") : "Couldn't open the device list: " + (e && e.message ? e.message : e));
         refreshButtons();
         return;
       }
@@ -335,7 +339,7 @@ crc-32/crc32.js:
     });
     client.on("printprogress", (e) => log(`page ${e.page}/${e.pagesTotal} print ${e.pagePrintProgress}% feed ${e.pageFeedProgress}%`));
     try {
-      await client.connect(device ? { authorizedDevice: device } : undefined);
+      await client.connect({ authorizedDevice: device });
     } catch (e) {
       log("connect error: " + (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : e));
       const msg = String(e && e.message ? e.message : e);
