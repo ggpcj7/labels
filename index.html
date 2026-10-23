@@ -66,6 +66,13 @@ main { max-width: 560px; margin: 0 auto; display: grid; gap: 12px; }
 .printer .ptext strong { display: block; font-size: 0.95rem; }
 .printer .ptext span { color: var(--muted); font-size: 0.82rem; }
 .printer button { flex: none; }
+.printer { flex-wrap: wrap; }
+.pstatus { display: flex; flex-wrap: wrap; gap: 6px; flex-basis: 100%; padding-left: 20px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--chip); color: var(--ink); font-variant-numeric: tabular-nums; }
+.chip .bar { width: 22px; height: 10px; border: 1.5px solid currentColor; border-radius: 2px; position: relative; }
+.chip .bar i { position: absolute; left: 1px; top: 1px; bottom: 1px; background: currentColor; border-radius: 1px; }
+.chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.bad { background: var(--warn-bg); color: var(--err); }
 
 section.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 12px; min-width: 0; }
 .eyebrow { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0; }
@@ -162,6 +169,7 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
     <span class="dot" aria-hidden="true"></span>
     <div class="ptext"><strong id="pstate">Printer not connected</strong><span id="pdetail">Turn the B1 on, then tap Connect.</span></div>
     <button id="connect" type="button" class="primary">Connect</button>
+    <div class="pstatus" id="pstatus" hidden></div>
   </div>
   <div class="notice" id="no-bt" hidden>
     <strong>This browser can't reach the printer.</strong>
@@ -315,7 +323,7 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
         <pre id="log"></pre>
         <button id="copy-log" type="button" style="margin-top:8px;">Copy log</button>
       </details>
-      <p class="version">Label Maker v1.1</p>
+      <p class="version">Label Maker v1.2</p>
     </section>
   </div>
 </main>
@@ -829,6 +837,7 @@ crc-32/crc32.js:
     $("preview-title").textContent = `Preview · ${MODES[mode].w}×${MODES[mode].h}mm · prints exactly like this`;
     if (mode === "prepack" && state.product && !state.oneoff && !$("ingredients").value) $("ingredients").value = state.product.prepack || "";
     store.set("mode", mode);
+    renderPrinterStatus();
     updateAllergenWarning();
     render();
     refreshPrintButton();
@@ -877,6 +886,43 @@ crc-32/crc32.js:
   const lib = window.niimbluelib;
   const hasBluetooth = !!(navigator.bluetooth && navigator.bluetooth.requestDevice);
   let client = null, connected = false, printing = false, modelName = "B1";
+  const pst = { battery: null, lidClosed: null, paperInserted: null, total: null, used: null, w: null, h: null };
+  let lastHeartbeatLog = "";
+
+  /** Battery, lid, labels-left and roll-size chips under the printer name. */
+  function renderPrinterStatus() {
+    const box = $("pstatus");
+    box.innerHTML = "";
+    if (!connected) { box.hidden = true; return; }
+    const chip = (text, cls) => { const c = document.createElement("span"); c.className = "chip" + (cls ? " " + cls : ""); c.textContent = text; box.append(c); return c; };
+    if (pst.battery != null) {
+      const b = Math.max(0, Math.min(100, pst.battery));
+      const c = chip("", b <= 20 ? "bad" : b <= 40 ? "warn" : "");
+      const bar = document.createElement("span"); bar.className = "bar"; const fill = document.createElement("i"); fill.style.width = `calc(${b}% - 2px)`; bar.append(fill);
+      c.append(bar, document.createTextNode(`${b}%${b <= 20 ? " · charge soon" : ""}`));
+    }
+    if (pst.lidClosed === false) chip("Lid open", "bad");
+    else if (pst.paperInserted === false) chip("No labels loaded", "bad");
+    if (pst.total) {
+      const left = Math.max(0, pst.total - (pst.used || 0));
+      chip(`${left} of ${pst.total} labels left`, left <= 20 ? "warn" : "");
+    }
+    if (pst.w && pst.h) {
+      const m = MODES[state.mode];
+      const match = Math.abs(pst.w - m.w) <= 2 && Math.abs(pst.h - m.h) <= 2;
+      chip(`${pst.w}×${pst.h}mm roll${match ? "" : ` · this label needs ${m.w}×${m.h}`}`, match ? "" : "bad");
+    }
+    box.hidden = !box.childNodes.length;
+  }
+
+  function readRoll(info) {
+    const r = info && info.labelRfidInfo, p = info && info.paperInfo;
+    if (r && r.tagPresent && r.allPaper > 0) { pst.total = r.allPaper; pst.used = r.usedPaper; } else { pst.total = null; pst.used = null; }
+    // Roll size is only reported by some models; ignore anything implausible
+    const w = p && p.valid ? Math.round(p.paperWidth || 0) : 0, h = p && p.valid ? Math.round(p.paperHeight || 0) : 0;
+    if (w >= 10 && w <= 80 && h >= 10 && h <= 200) { pst.w = w; pst.h = h; } else { pst.w = null; pst.h = null; }
+    renderPrinterStatus();
+  }
 
   function setPrinter(stateName, title, detail) {
     $("printer").dataset.state = stateName;
@@ -923,13 +969,27 @@ crc-32/crc32.js:
       connected = true;
       const info = client.getPrinterInfo ? client.getPrinterInfo() : {};
       modelName = (client.getModelMetadata && client.getModelMetadata()?.model) || "B1";
-      const batt = info && info.batteryPercents != null ? ` · battery ${info.batteryPercents}%` : "";
-      setPrinter("connected", `${modelName} connected`, (device.name || "") + batt);
+      if (info && info.batteryPercents != null) pst.battery = info.batteryPercents;
+      setPrinter("connected", `${modelName} connected`, device.name || "");
       log("connected " + JSON.stringify(info || {}));
+      try { readRoll(client.getRfidInfo()); log("roll " + JSON.stringify(client.getRfidInfo())); } catch (e) {}
+      renderPrinterStatus();
       refreshPrintButton();
     });
+    client.on("heartbeat", (e) => {
+      const d = e.data || {};
+      if (d.batteryPercents != null) pst.battery = d.batteryPercents;
+      if (d.lidClosed != null) pst.lidClosed = d.lidClosed;
+      if (d.paperInserted != null) pst.paperInserted = d.paperInserted;
+      const sig = JSON.stringify(d);
+      if (sig !== lastHeartbeatLog) { log("status " + sig); lastHeartbeatLog = sig; }
+      renderPrinterStatus();
+    });
+    client.on("rfidinfofetched", (e) => { log("roll " + JSON.stringify(e.info || {})); readRoll(e.info); });
     client.on("disconnect", () => {
       connected = false; printing = false;
+      Object.keys(pst).forEach((k) => { pst[k] = null; });
+      renderPrinterStatus();
       setPrinter("idle", "Printer disconnected", "Tap Connect to reconnect.");
       log("disconnected");
       refreshPrintButton();
@@ -1113,7 +1173,7 @@ crc-32/crc32.js:
   if (!hasBluetooth) { $("no-bt").hidden = false; }
   if (!lib) setStatus("err", "The printing part of the app didn't load. Reload the page.");
 
-  log("Label Maker v1.1 · " + navigator.userAgent);
+  log("Label Maker v1.2 · " + navigator.userAgent);
   sheetStatusText();
   state.oneoff = !state.products.length;
   $("oneoff-fields").hidden = !state.oneoff;
@@ -1137,7 +1197,7 @@ crc-32/crc32.js:
   }
 
   // Exposed for automated checks only
-  window.__labelTest = { splitAllergens, cleanAllergens, addPeriod, openedUseBy, fmtDate, fmtTime, state, render, setMode, setType, selectProduct, isEmph };
+  window.__labelTest = { pst, renderPrinterStatus, readRoll, setConnected: (v) => { connected = v; }, splitAllergens, cleanAllergens, addPeriod, openedUseBy, fmtDate, fmtTime, state, render, setMode, setType, selectProduct, isEmph };
 })();
 </script>
 </body>
