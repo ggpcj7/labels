@@ -189,7 +189,10 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
           <input id="oneoff-name" type="text" maxlength="40" autocomplete="off" placeholder="e.g. Basil oil">
         </label>
         <label class="f wide" for="oneoff-allergens">Allergens
-          <input id="oneoff-allergens" type="text" autocomplete="off" placeholder="e.g. Milk, Gluten (wheat) — or leave blank for none">
+          <input id="oneoff-allergens" type="text" autocomplete="off" placeholder="e.g. Milk, Wheat (Gluten) — or leave blank for none">
+        </label>
+        <label class="f wide" for="oneoff-may">May contain (optional)
+          <input id="oneoff-may" type="text" autocomplete="off" placeholder="e.g. Nuts, Sesame Seeds">
         </label>
       </div>
       <div class="notice" id="allergen-warning" hidden></div>
@@ -312,7 +315,7 @@ pre#log { font: 12px/1.4 var(--mono); background: var(--bg); border: 1px solid v
         <pre id="log"></pre>
         <button id="copy-log" type="button" style="margin-top:8px;">Copy log</button>
       </details>
-      <p class="version">Label Maker v1.0</p>
+      <p class="version">Label Maker v1.1</p>
     </section>
   </div>
 </main>
@@ -475,24 +478,27 @@ crc-32/crc32.js:
     ctx.putImageData(img, 0, 0);
   }
 
-  /** Split allergens across at most two lines, breaking only between allergens. */
-  function allergenLines(text, full) {
-    const head = "ALLERGENS: ";
-    for (let px = 17; px >= 14; px--) {
-      if (tw(head, 700, px) + tw(text, 900, px) <= full) return { lines: [text], px };
-    }
-    let px = 15;
-    for (; px >= 12; px--) {
-      const firstW = full - tw(head, 700, px);
-      const items = text.split(/\s*,\s*/);
-      const l1 = [], l2 = [];
-      for (const it of items) {
-        if (!l2.length && tw([...l1, it].join(", ") + ",", 900, px) <= firstW) l1.push(it); else l2.push(it);
+  /** Lay out "ALLERGENS:" and "MAY CONTAIN:" segments, breaking only between allergens.
+      Returns lines of {head, text} at the largest size where everything fits in maxLines. */
+  function allergenBlock(segments, full, maxLines) {
+    for (let px = 17; px >= 12; px--) {
+      const lines = [];
+      let ok = true;
+      for (const [head, text] of segments) {
+        const items = text.split(/\s*,\s*(?![^(]*\))/).filter(Boolean);
+        let cur = [], first = true;
+        const room = () => full - (first ? tw(head, 700, px) : 0);
+        for (const it of items) {
+          const trial = [...cur, it].join(", ") + (it === items[items.length - 1] ? "" : ",");
+          if (!cur.length || tw(trial, 900, px) <= room()) cur.push(it);
+          else { lines.push({ head: first ? head : "", text: cur.join(", ") + "," }); first = false; cur = [it]; }
+        }
+        lines.push({ head: first ? head : "", text: cur.join(", ") });
       }
-      const lines = l2.length ? [l1.join(", ") + ",", l2.join(", ")] : [l1.join(", ")];
-      if (lines.length < 2 || tw(lines[1], 900, px) <= full) return { lines, px };
+      for (const l of lines) if (tw(l.head, 700, px) + tw(l.text, 900, px) > full) ok = false;
+      if (ok && lines.length <= maxLines) return { lines, px };
     }
-    return { lines: [text], px: 12 };
+    return null;
   }
 
   function drawFood(L) {
@@ -510,11 +516,14 @@ crc-32/crc32.js:
     ctx.font = f(700, sPx); ctx.textAlign = "right"; ctx.fillText(L.storage, W - M, bh / 2 + 1);
 
     const name = (L.name || "PRODUCT NAME").toUpperCase();
-    const nPx = fit(name, 800, 32, full, 15);
+    let nPx = fit(name, 800, 32, full, 15);
     const labW = Math.max(tw(L.made, 700, 14), tw("USE BY", 700, 14)) + 8;
     const fdPx = 23, fuPx = 27, rh = fuPx + 10;
-    const al = allergenLines((L.allergens || "NONE").toUpperCase(), full);
+    const segs = [["ALLERGENS: ", (L.allergens || "None").toUpperCase()]];
+    if (L.may) segs.push(["MAY CONTAIN: ", L.may.toUpperCase()]);
+    const al = allergenBlock(segs, full, 4) || { lines: segs.map(([h, t]) => ({ head: h, text: t })), px: 12 };
     const aH = al.lines.length * (al.px + 3) - 3;
+    if (H - bh - M - (nPx + fdPx + rh + aH) < 14) nPx = Math.max(15, Math.min(nPx, H - bh - M - (fdPx + rh + aH) - 14));
     const blocks = [nPx, fdPx, rh, aH];
     const gap = (H - bh - M - blocks.reduce((a, b) => a + b, 0)) / (blocks.length + 0.5);
     let y = bh + gap * 0.8;
@@ -541,11 +550,12 @@ crc-32/crc32.js:
     ctx.font = f(900, fit(ub, 900, fuPx, full - labW, 16)); ctx.fillText(ub, M + labW, y + rh / 2 + 1);
 
     ctx.fillStyle = "#000"; ctx.textBaseline = "top";
-    const ya = H - M - aH;
-    const head = "ALLERGENS: ";
-    ctx.font = f(700, al.px); ctx.fillText(head, M, ya);
-    ctx.font = f(900, al.px); ctx.fillText(al.lines[0], M + tw(head, 700, al.px), ya);
-    if (al.lines[1]) { ctx.font = f(900, al.px); ctx.fillText(al.lines[1], M, ya + al.px + 3); }
+    let ya = H - M - aH;
+    for (const l of al.lines) {
+      ctx.font = f(700, al.px); ctx.fillText(l.head, M, ya);
+      ctx.font = f(900, al.px); ctx.fillText(l.text, M + tw(l.head, 700, al.px), ya);
+      ya += al.px + 3;
+    }
     threshold();
     return { fits: true };
   }
@@ -588,7 +598,7 @@ crc-32/crc32.js:
     // Bottom block, measured first so ingredients get whatever is left
     const businessH = L.business ? 20 : 0;
     const bottomH = businessH + 22 + 34 + 6 + 26;
-    const avail = H - M - bottomH - y - 20;
+    const avail = H - M - bottomH - y - 20 - (L.may ? 17 : 0);
     let px = 17, lay;
     for (; px >= 14; px--) { lay = layoutIngredients(L.ingredients || "", M, full, px); if (lay.lines * lay.lh <= avail) break; }
     const fits = lay.lines * lay.lh <= avail;
@@ -598,6 +608,11 @@ crc-32/crc32.js:
     }
     y += Math.min(lay.lines, Math.floor(avail / lay.lh) + 1) * lay.lh + 2;
     ctx.font = f(600, 13); ctx.fillText("Allergens in BOLD CAPITALS.", M, y);
+    if (L.may) {
+      y += 17;
+      const mp = fit("May contain: " + L.may, 700, 15, full, 12);
+      ctx.font = f(700, mp); ctx.fillText("May contain: " + L.may, M, y);
+    }
 
     // Bottom-anchored dates
     const flab = 14, labW = tw("PREPARED", 700, flab) + 10;
@@ -658,28 +673,44 @@ crc-32/crc32.js:
   /* ------------------------------------------------------------------ */
   /* Building the label from the screen                                  */
   /* ------------------------------------------------------------------ */
+  /** "Spelt (Gluten), Wheat (Gluten), Milk" -> "Spelt & Wheat (Gluten), Milk"; old names shortened. */
   function cleanAllergens(s) {
-    if (!s) return "";
-    return s.split(/\s*,\s*/).filter(Boolean).map((a) => ALLERGEN_SHORT[a.toLowerCase()] || a).join(", ");
+    if (!s || /^none$/i.test(s.trim())) return "";
+    const items = s.split(/\s*,\s*(?![^(]*\))/).filter(Boolean).map((a) => ALLERGEN_SHORT[a.toLowerCase()] || a.trim());
+    const cereals = [], rest = [];
+    for (const it of items) { const m = it.match(/^(.*?)\s*\(gluten\)$/i); if (m) cereals.push(m[1]); else rest.push(it); }
+    if (cereals.length) {
+      const joined = cereals.length === 1 ? cereals[0] : cereals.slice(0, -1).join(", ") + " & " + cereals[cereals.length - 1];
+      rest.unshift(joined + " (Gluten)");
+    }
+    return rest.join(", ");
+  }
+  /** Split the sheet's "Contains | May contain: …" text. */
+  function splitAllergens(s) {
+    const [contains, may] = String(s || "").split(/\s*\|\s*may contain:\s*/i);
+    return { contains: cleanAllergens(contains), may: cleanAllergens(may || "") };
   }
 
   function currentLabel(start, overrideUseBy) {
     const t = TYPES[state.type];
     const p = state.product;
-    let name, allergens, storage = t.storage, ingredients = "";
+    let name, allergens, may = "", storage = t.storage, ingredients = "";
     if (state.oneoff || !p) {
       name = $("oneoff-name").value.trim();
-      allergens = $("oneoff-allergens").value.trim() || "None";
+      allergens = cleanAllergens($("oneoff-allergens").value.trim()) || "None";
+      may = cleanAllergens($("oneoff-may").value.trim());
     } else {
       name = p.name;
-      allergens = cleanAllergens(p.allergensOverride || p.allergensAuto) || "None";
+      const a = splitAllergens(p.allergensOverride || p.allergensAuto);
+      allergens = a.contains || "None";
+      may = a.may;
       if (p.storage && p.type === state.type) storage = p.storage.toUpperCase();
       ingredients = p.prepack || "";
     }
     if (state.mode === "prepack") ingredients = $("ingredients").value;
     const useBy = overrideUseBy || addPeriod(start, state.within[0], state.within[1]);
     return {
-      type: state.type, made: t.made, storage, name, allergens, ingredients,
+      type: state.type, made: t.made, storage, name, allergens, may, ingredients,
       start, useBy, initials: $("initials").value.trim(),
       business: store.get("business", ""),
     };
@@ -1064,7 +1095,7 @@ crc-32/crc32.js:
   $("within-n").addEventListener("input", () => { const n = Number($("within-n").value); if (n > 0) { state.within[0] = n; $("within-hint").textContent = "Changed for this label"; render(); } });
   $("within-unit").addEventListener("change", () => { state.within[1] = $("within-unit").value; $("within-hint").textContent = "Changed for this label"; render(); });
   $("search").addEventListener("input", renderProducts);
-  for (const id of ["oneoff-name", "oneoff-allergens", "ingredients"]) $(id).addEventListener("input", () => { render(); refreshPrintButton(); });
+  for (const id of ["oneoff-name", "oneoff-allergens", "oneoff-may", "ingredients"]) $(id).addEventListener("input", () => { render(); refreshPrintButton(); });
   $("qty-minus").addEventListener("click", () => { state.qty = Math.max(1, state.qty - 1); $("qty").textContent = state.qty; refreshPrintButton(); });
   $("qty-plus").addEventListener("click", () => { state.qty = Math.min(20, state.qty + 1); $("qty").textContent = state.qty; refreshPrintButton(); });
   $("connect").addEventListener("click", () => connect(false));
@@ -1082,7 +1113,7 @@ crc-32/crc32.js:
   if (!hasBluetooth) { $("no-bt").hidden = false; }
   if (!lib) setStatus("err", "The printing part of the app didn't load. Reload the page.");
 
-  log("Label Maker v1.0 · " + navigator.userAgent);
+  log("Label Maker v1.1 · " + navigator.userAgent);
   sheetStatusText();
   state.oneoff = !state.products.length;
   $("oneoff-fields").hidden = !state.oneoff;
@@ -1106,7 +1137,7 @@ crc-32/crc32.js:
   }
 
   // Exposed for automated checks only
-  window.__labelTest = { addPeriod, openedUseBy, fmtDate, fmtTime, state, render, setMode, setType, selectProduct, isEmph };
+  window.__labelTest = { splitAllergens, cleanAllergens, addPeriod, openedUseBy, fmtDate, fmtTime, state, render, setMode, setType, selectProduct, isEmph };
 })();
 </script>
 </body>
